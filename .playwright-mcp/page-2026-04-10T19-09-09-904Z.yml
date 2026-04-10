@@ -1,0 +1,28 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e8]:
+    - img [ref=e9]
+    - paragraph [ref=e11]: Загружается...
+  - iframe [ref=e12]:
+    - generic [ref=f1e5]:
+      - img [ref=f1e7]
+      - generic [ref=f1e11]:
+        - paragraph [ref=f1e13]: Войти по Самокат ID
+        - generic [ref=f1e15]:
+          - generic [ref=f1e16]:
+            - generic [ref=f1e18]:
+              - generic [ref=f1e19]: Логин
+              - textbox "Логин" [active] [ref=f1e21]:
+                - /placeholder: Имя
+            - generic [ref=f1e23]:
+              - generic [ref=f1e24]: Пароль
+              - generic [ref=f1e25]:
+                - textbox "Пароль" [ref=f1e26]
+                - button [ref=f1e28] [cursor=pointer]:
+                  - img [ref=f1e29]
+            - generic [ref=f1e31]: Забыли пароль?
+          - generic [ref=f1e32]:
+            - button "Войти" [ref=f1e33] [cursor=pointer]:
+              - generic [ref=f1e34]: Войти
+            - button "Получить код на телефон" [ref=f1e35] [cursor=pointer]:
+              - img [ref=f1e36]
+              - generic [ref=f1e38]: Получить код на телефон

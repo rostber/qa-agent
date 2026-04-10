@@ -1,0 +1,13 @@
+[    1116ms] [LOG] auth-internal-web v1.4.0 @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
+[    1231ms] Access token is missing
+[    1231ms] Refresh token is missing
+[    1232ms] [WARNING] Компонент ReactHookForm признан устаревшим. Для работы с формами используйте стандартный FormProvider. @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
+[    1233ms] Access token is missing
+[    1234ms] Refresh token is missing
+[    1329ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ https://idm-auth-internal-web-integration.samokat.io/?clientId=CMS&api=v2:0
+[    1617ms] Access token is missing
+[    1617ms] Refresh token is missing
+[   27413ms] [LOG] auth-internal-web v1.4.0 @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
+[   27579ms] [LOG] App version 2.9.4 @ https://cm-catalog-client-web-integration.samokat.io/static/js/main.916216c4.js:1449
+[   37348ms] [ERROR] Failed to load resource: the server responded with a status of 405 () @ https://cm-catalog-client-web-integration.samokat.io/products/all:0
+[   45984ms] [LOG] auth-internal-web v1.4.0 @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
