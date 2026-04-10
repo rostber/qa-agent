@@ -8,7 +8,7 @@ export interface Config {
   model: string;
 }
 
-export function getConfig(): Config {
+export function getEnv(): Config {
   const apiToken = process.env.OPENAI_API_TOKEN;
   const baseUrl = process.env.OPENAI_BASE_URL;
   const model = process.env.OPENAI_MODEL;

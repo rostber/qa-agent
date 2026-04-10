@@ -17,11 +17,13 @@
     "@modelcontextprotocol/sdk": "^1.0.1",
     "@playwright/mcp": "^0.0.70",
     "ai": "^6.0.156",
+    "chalk": "^5.6.2",
     "dotenv": "^17.4.1",
     "playwright": "^1.51.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/chalk": "^0.4.31",
     "@types/node": "^25.6.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"

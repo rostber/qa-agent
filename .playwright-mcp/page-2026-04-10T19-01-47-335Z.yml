@@ -1,6 +1,0 @@
-- generic [active] [ref=e1]:
-  - generic [ref=e8]:
-    - img [ref=e9]
-    - paragraph [ref=e11]: Загружается...
-  - iframe [ref=e12]:
-    

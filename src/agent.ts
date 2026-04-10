@@ -1,7 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import { getConfig } from './config.js';
+import { getEnv } from './env.js';
 
 // Глобальный MCP клиент - один на всю сессию
 let globalMcpClient: any = null;
@@ -76,7 +76,7 @@ ${toolList}`;
 }
 
 export async function createAgent(systemPrompt: string, requestCounter: { count: number }) {
-  const config = getConfig();
+  const config = getEnv();
   const { client: mcpClient, tools } = await getMcpClient();
 
   const openai = createOpenAI({

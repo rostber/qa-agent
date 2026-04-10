@@ -1,9 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { join } from 'path';
+import packageJson from '../package.json' with { type: 'json' };
 
 export async function createPlaywrightMcpClient(): Promise<Client> {
-  // Используем локальную версию @playwright/mcp через абсолютный путь
-  const mcpCliPath = '/Users/vladimirsavelyev/Downloads/qa-agent/node_modules/@playwright/mcp/cli.js';
+  // Используем локальную версию @playwright/mcp через относительный путь от корня проекта
+  const mcpCliPath = join(process.cwd(), 'node_modules/@playwright/mcp/cli.js');
 
   const transport = new StdioClientTransport({
     command: 'node',
@@ -12,8 +14,8 @@ export async function createPlaywrightMcpClient(): Promise<Client> {
 
   const client = new Client(
     {
-      name: 'qa-agent-playwright-client',
-      version: '1.0.0',
+      name: packageJson.name,
+      version: packageJson.version,
     },
     {
       capabilities: {},

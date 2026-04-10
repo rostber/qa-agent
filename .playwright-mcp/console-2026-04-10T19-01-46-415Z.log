@@ -1,9 +1,0 @@
-[     868ms] [LOG] auth-internal-web v1.4.0 @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
-[     988ms] Access token is missing
-[     989ms] Refresh token is missing
-[     988ms] [WARNING] Компонент ReactHookForm признан устаревшим. Для работы с формами используйте стандартный FormProvider. @ https://idm-auth-internal-web-integration.samokat.io/static/js/main.3ba0ff64.js:171
-[     990ms] Access token is missing
-[     990ms] Refresh token is missing
-[    1083ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ https://idm-auth-internal-web-integration.samokat.io/?clientId=CMS&api=v2:0
-[    1389ms] Access token is missing
-[    1390ms] Refresh token is missing
