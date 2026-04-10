@@ -25,6 +25,16 @@ const styles = {
   blue: chalk.blue,
 };
 
+// Валидация URL
+function isValidUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function printWelcomeMessage() {
   const lastUrl = getLastUrl();
   console.log('\n' + styles.bold.bgBlue(' QA Agent CLI ') + '\n');
@@ -51,11 +61,11 @@ function printWelcomeMessage() {
 let loadingInterval: NodeJS.Timeout | null = null;
 let currentLoadingMessage = '';
 
-function showLoading(message: string = 'Агент думает...', requestCounter: { count: number }) {
+function showLoading(message: string = 'Агент думает...', llmRequestCounter: { count: number }) {
   let i = 0;
-  
+
   loadingInterval = setInterval(() => {
-    const count = requestCounter.count;
+    const count = llmRequestCounter.count;
     const suffix = count === 1 ? 'запрос' : (count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20) ? 'запроса' : 'запросов');
     const status = count > 0 ? styles.dim(`(${count} ${suffix})`) : '';
     currentLoadingMessage = `\r${LOADING_FRAMES[i]} ${styles.cyan(message)} ${status}`;
@@ -83,7 +93,7 @@ async function main() {
   let agent: Awaited<ReturnType<typeof createAgent>> | null = null;
   const conversationHistory: any[] = [];
   let isProcessing = false;
-  const requestCounter = { count: 0 };
+  const llmRequestCounter = { count: 0 };
 
   printWelcomeMessage();
 
@@ -92,11 +102,11 @@ async function main() {
   if (lastUrl) {
     console.log(`${styles.info('➜')} ${styles.dim('Найдена сохранённая URL:')} ${styles.bold(lastUrl)}`);
     console.log(`${styles.dim('  Используйте /open <new-url> для открытия другой страницы.')}\n`);
-    
+
     // Создаём агента и открываем страницу
     try {
-      agent = await createAgent(systemPrompt, requestCounter);
-      showLoading('Открываю сохранённую страницу...', requestCounter);
+      agent = await createAgent(systemPrompt, llmRequestCounter);
+      showLoading('Открываю сохранённую страницу...', llmRequestCounter);
       await agent.chat(`Открой страницу ${lastUrl}`, []);
       stopLoading(true, 'Страница открыта');
     } catch (error: any) {
@@ -160,6 +170,15 @@ async function main() {
         promptUser();
         return;
       }
+
+      // Валидация URL
+      if (!isValidUrl(url)) {
+        console.log(styles.red(`Неверный URL: ${url}`));
+        console.log(styles.dim('  URL должен начинаться с http:// или https://'));
+        promptUser();
+        return;
+      }
+
       console.log(`\n${styles.info('➜')} ${styles.cyan('Открываю браузер по адресу:')} ${styles.bold(url)}`);
       console.log(`${styles.dim('  Браузер должен открыться в видимом режиме.')}`);
       console.log(`${styles.dim('  Авторизуйтесь вручную, затем продолжайте работу с агентом.')}\n`);
@@ -169,9 +188,9 @@ async function main() {
 
       // Создаём агента при первой команде /open
       if (!agent) {
-        showLoading('Инициализация агента...', requestCounter);
+        showLoading('Инициализация агента...', llmRequestCounter);
         try {
-          agent = await createAgent(systemPrompt, requestCounter);
+          agent = await createAgent(systemPrompt, llmRequestCounter);
           stopLoading(true, 'Агент готов к работе');
         } catch (error: any) {
           stopLoading(false, 'Ошибка инициализации агента');
@@ -182,7 +201,7 @@ async function main() {
       }
 
       // Открываем страницу
-      showLoading('Открываю страницу...', requestCounter);
+      showLoading('Открываю страницу...', llmRequestCounter);
       await agent.chat(`Открой страницу ${url}`, []);
       stopLoading(true, 'Страница открыта');
 
@@ -202,9 +221,9 @@ async function main() {
       console.log(`${styles.info('➜')} ${styles.cyan('Открываю сохранённую URL:')} ${styles.bold(lastUrl)}`);
 
       if (!agent) {
-        showLoading('Инициализация агента...', requestCounter);
+        showLoading('Инициализация агента...', llmRequestCounter);
         try {
-          agent = await createAgent(systemPrompt, requestCounter);
+          agent = await createAgent(systemPrompt, llmRequestCounter);
           stopLoading(true, 'Агент готов к работе');
         } catch (error: any) {
           stopLoading(false, 'Ошибка инициализации агента');
@@ -214,7 +233,7 @@ async function main() {
         }
       }
 
-      showLoading('Открываю страницу...', requestCounter);
+      showLoading('Открываю страницу...', llmRequestCounter);
       await agent.chat(`Открой страницу ${lastUrl}`, []);
       stopLoading(true, 'Страница открыта');
 
@@ -226,7 +245,7 @@ async function main() {
     if (trimmed.startsWith(PROMPT_PREFIX)) {
       systemPrompt = trimmed.slice(PROMPT_PREFIX.length).trim();
       if (agent) {
-        agent = await createAgent(systemPrompt, requestCounter);
+        agent = await createAgent(systemPrompt, llmRequestCounter);
       }
       console.log(`${styles.success('✓')} ${styles.cyan('Системный промт обновлён')}`);
       inputBuffer = '';
@@ -241,7 +260,7 @@ async function main() {
     }
 
     isProcessing = true;
-    showLoading('Агент думает...', requestCounter);
+    showLoading('Агент думает...', llmRequestCounter);
 
     try {
       const result = await agent.chat(userInput, conversationHistory);
@@ -256,9 +275,10 @@ async function main() {
       }
       console.log('\n');
 
-      // Очищаем историю от tool результатов, оставляем только user/assistant
+      // Сохраняем всю историю сообщений (включая результаты инструментов)
+      // Но ограничиваем размер для экономии токенов
       const cleanHistory = conversationHistory.filter((msg: any) =>
-        msg.role === 'user' || msg.role === 'assistant'
+        msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system'
       );
       cleanHistory.push({ role: 'user', content: userInput });
       cleanHistory.push({ role: 'assistant', content: fullResponse });
@@ -272,8 +292,8 @@ async function main() {
       conversationHistory.length = 0;
       conversationHistory.push(...cleanHistory);
 
-      // Сбрасываем счётчик запросов
-      requestCounter.count = 0;
+      // Сброс счётчика LLM запросов (планирование)
+      llmRequestCounter.count = 0;
     } catch (error: any) {
       stopLoading(false, 'Ошибка при обработке запроса');
       console.error(styles.red(`  ${error.message}`));

@@ -2,10 +2,11 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 import { getEnv } from './env.js';
+import { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 // Глобальный MCP клиент - один на всю сессию
 let globalMcpClient: any = null;
-let globalTools: any[] = [];
+let globalTools: Tool[] = [];
 
 async function getMcpClient() {
   if (!globalMcpClient) {
@@ -17,23 +18,36 @@ async function getMcpClient() {
   return { client: globalMcpClient, tools: globalTools };
 }
 
-// Преобразуем JSON Schema в zod схему
+// Преобразуем JSON Schema в zod схему с поддержкой больше типов
 function jsonSchemaToZod(schema: any): z.ZodTypeAny {
-  if (!schema) return z.object({});
+  if (!schema) return z.unknown();
+
+  // Обработка enum
+  if (schema.enum) {
+    return z.enum(schema.enum as [string, ...string[]]);
+  }
+
+  // Обработка oneOf/anyOf - берём первый вариант
+  if (schema.oneOf || schema.anyOf) {
+    const variants = (schema.oneOf || schema.anyOf).slice(0, 1);
+    if (variants.length > 0) {
+      return jsonSchemaToZod(variants[0]);
+    }
+  }
 
   switch (schema.type) {
     case 'object': {
       const shape: Record<string, any> = {};
       const required = schema.required || [];
-      
+
       for (const [key, value] of Object.entries(schema.properties || {})) {
-        let fieldSchema = jsonSchemaToZod(value as any);
+        let fieldSchema = jsonSchemaToZod(value);
         if (!required.includes(key)) {
           fieldSchema = fieldSchema.optional();
         }
         shape[key] = fieldSchema;
       }
-      
+
       return z.object(shape);
     }
     case 'array': {
@@ -58,21 +72,34 @@ function jsonSchemaToZod(schema: any): z.ZodTypeAny {
 function formatMcpResult(result: any): string {
   if (typeof result === 'string') return result;
   if (result.content && Array.isArray(result.content)) {
+    if (result.content.length === 0) return 'Пустой результат';
     return result.content
-      .map((c: any) => c.text || c)
+      .map((c: any) => c.text || c || JSON.stringify(c))
+      .filter((t: string) => t && t !== 'undefined' && t !== 'null')
       .join('\n');
   }
-  return JSON.stringify(result);
+  const str = JSON.stringify(result);
+  return str === '{}' ? 'Пустой результат' : str;
 }
 
 // Генерируем список инструментов для системного промта
-function generateToolsPrompt(tools: any[]): string {
-  const toolList = tools.map(t => 
+function generateToolsPrompt(tools: Tool[]): string {
+  const toolList = tools.map(t =>
     `- ${t.name}: ${t.description}`
   ).join('\n');
-  
+
   return `ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
 ${toolList}`;
+}
+
+// Валидация URL
+function isValidUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 export async function createAgent(systemPrompt: string, requestCounter: { count: number }) {
@@ -84,51 +111,80 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
     baseURL: config.baseUrl,
   });
 
-  // Добавляем список инструментов в системный промт
+  // Добавляем список инструментов в системный промт (используем только fullSystemPrompt)
   const toolsPrompt = generateToolsPrompt(tools);
   const fullSystemPrompt = `${systemPrompt}\n\n${toolsPrompt}`;
 
-  const mcpToolMap: Record<string, any> = {};
+  const mcpToolMap: Record<string, { description: string; parameters: z.ZodTypeAny; execute: (args: any) => Promise<{ content: string }> }> = {};
+  
   for (const tool of tools) {
     const zodSchema = jsonSchemaToZod(tool.inputSchema);
-    
+
     // Для browser_click используем только ref (согласно схеме MCP)
     if (tool.name === 'browser_click') {
       mcpToolMap[tool.name] = {
-        description: tool.description,
+        description: tool.description ?? '',
         parameters: z.object({
-          ref: z.string().describe('Exact target element reference from the page snapshot'),
+          ref: z.string().describe('Exact target element reference from the page snapshot (например, "e3")'),
           element: z.string().optional().describe('Human-readable element description'),
           doubleClick: z.boolean().optional().describe('Whether to perform a double click'),
           button: z.enum(['left', 'right', 'middle']).optional().describe('Button to click'),
           modifiers: z.array(z.enum(['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift'])).optional().describe('Modifier keys to press'),
         }),
         execute: async (args: any) => {
-          const result = await mcpClient.callTool(
-            {
-              name: 'browser_click',
-              arguments: {
-                ref: args.ref,
-                element: args.element,
-                doubleClick: args.doubleClick,
-                button: args.button,
-                modifiers: args.modifiers,
-              },
-            },
-            undefined,
-            { timeout: 30000 }
-          );
-          return { content: formatMcpResult(result) };
+          // Валидация: ref обязателен
+          if (!args.ref || typeof args.ref !== 'string') {
+            return { content: '### Error: ref обязателен для browser_click' };
+          }
+
+          // Retry с коротким ожиданием — даёт Playwright время на ожидание элемента
+          const maxRetries = 2;
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+              const result = await mcpClient.callTool(
+                {
+                  name: 'browser_click',
+                  arguments: {
+                    ref: args.ref,
+                    element: args.element,
+                    doubleClick: args.doubleClick,
+                    button: args.button,
+                    modifiers: args.modifiers,
+                  },
+                },
+                undefined,
+                { timeout: 5000 } // 5 секунд — достаточно для клика
+              );
+              return { content: formatMcpResult(result) };
+            } catch (error: any) {
+              const errorMsg = error.message || String(error);
+              const isTimeout = errorMsg.includes('Timeout');
+              
+              // Если это последняя попытка или не таймаут, возвращаем ошибку
+              if (attempt === maxRetries || !isTimeout) {
+                return { content: `### Error: ${errorMsg.substring(0, 500)}` };
+              }
+              
+              // Короткая задержка перед повторной попыткой — даёт странице время на рендер
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          }
+          return { content: '### Error: Не удалось выполнить клик' };
         },
       };
     } else if (tool.name === 'browser_wait_for') {
       mcpToolMap[tool.name] = {
-        description: tool.description,
+        description: tool.description ?? '',
         parameters: z.object({
           text: z.string().optional().describe('Текст для ожидания'),
           time: z.number().optional().describe('Время в мс'),
         }),
         execute: async (args: any) => {
+          // Преобразуем строку в число если нужно
+          if (args.time && typeof args.time === 'string') {
+            args.time = parseInt(args.time, 10);
+          }
+
           if (args.text) {
             const result = await mcpClient.callTool(
               {
@@ -140,23 +196,40 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
             );
             return { content: formatMcpResult(result) };
           }
-          if (args.time) {
-            const result = await mcpClient.callTool(
-              {
-                name: 'browser_wait_for',
-                arguments: { time: args.time },
-              },
-              undefined,
-              { timeout: 30000 }
-            );
-            return { content: formatMcpResult(result) };
+          if (args.time && typeof args.time === 'number') {
+            // Для time используем простую задержку без MCP вызова
+            await new Promise(resolve => setTimeout(resolve, args.time));
+            return { content: `Подождено ${args.time}мс` };
           }
           return { content: '### Error: Нет ни text ни time' };
         },
       };
+    } else if (tool.name === 'browser_navigate') {
+      mcpToolMap[tool.name] = {
+        description: tool.description ?? '',
+        parameters: z.object({
+          url: z.string().describe('URL для перехода'),
+        }),
+        execute: async (args: any) => {
+          // Валидация URL
+          if (!args.url || !isValidUrl(args.url)) {
+            return { content: `### Error: Неверный URL: ${args.url || '(пусто)'}` };
+          }
+          
+          const result = await mcpClient.callTool(
+            {
+              name: 'browser_navigate',
+              arguments: { url: args.url },
+            },
+            undefined,
+            { timeout: 30000 }
+          );
+          return { content: formatMcpResult(result) };
+        },
+      };
     } else {
       mcpToolMap[tool.name] = {
-        description: tool.description,
+        description: tool.description ?? '',
         parameters: zodSchema,
         execute: async (args: any) => {
           const result = await mcpClient.callTool(
@@ -176,18 +249,24 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
 
   return {
     async chat(userMessage: string, conversationHistory: any[] = []) {
+      // Используем fullSystemPrompt (с инструментами) вместо systemPrompt
       const messages: any[] = [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: fullSystemPrompt },
         ...conversationHistory,
         { role: 'user', content: userMessage },
       ];
 
-      let currentMessages = [...messages];
       let executionLog: string[] = [];
       let stepCount = 0;
-      const maxSteps = 50;
+      const maxSteps = 30; // Увеличили до 30 для сложных задач
       let hasError = false;
       let lastResult = '';
+      let consecutiveErrors = 0;
+      const maxConsecutiveErrors = 3; // Максимум 3 ошибки подряд перед остановкой
+      const recentActions: string[] = []; // История последних действий для обнаружения зацикливания
+      const maxRecentActions = 5; // Сколько последних действий хранить
+      const maxRepeatedActions = 5; // Максимум повторений одного действия перед остановкой (увеличено с 3 до 5)
+      let lastErrorStep = 0; // Номер шага когда была последняя ошибка
 
       // Выполняем шаги циклически: планируем -> выполняем -> повторяем
       while (stepCount < maxSteps) {
@@ -201,6 +280,14 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
         while (retries < maxRetries) {
           try {
             requestCounter.count++;
+            
+            // Формируем контекст последних snapshot для промта
+            const recentSnapshots = messages
+              .filter((m: any) => m.role === 'user' && m.content.includes('Результат browser_snapshot'))
+              .slice(-2) // Берём последние 2 snapshot
+              .map((m: any) => m.content)
+              .join('\n\n');
+            
             planResult = await generateObject({
               model: openai.chat(config.model),
               schema: z.object({
@@ -211,6 +298,7 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
               }),
               system: fullSystemPrompt,
               prompt: `Задача: ${userMessage.substring(0, 500)}
+${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSnapshots}` : ''}
 Результаты выполненных шагов: ${executionLog.slice(-5).join('; ')}
 Следующий шаг (tool, args, description, continue).
 Если все действия из задачи выполнены, установи continue=false.`,
@@ -219,7 +307,7 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
           } catch (error: any) {
             retries++;
             if (retries >= maxRetries) {
-              executionLog.push(`Ошибка генерации плана после ${maxRetries} попыток`);
+              executionLog.push(`Ошибка генерации плана после ${maxRetries} попыток: ${error.message?.substring(0, 100) || 'неизвестная ошибка'}`);
               hasError = true;
               break;
             }
@@ -241,11 +329,31 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
           break;
         }
 
+        // Отслеживаем повторяющиеся действия для обнаружения зацикливания
+        const actionKey = `${step.tool}:${step.description.substring(0, 30)}`;
+        recentActions.push(actionKey);
+        if (recentActions.length > maxRecentActions) {
+          recentActions.shift();
+        }
+
+        // Проверяем на зацикливание (одно и то же действие повторяется много раз)
+        // НО: пропускаем проверку если это snapshot сразу после ошибки (разумное поведение)
+        const repeatedCount = recentActions.filter(a => a === actionKey).length;
+        const isSnapshotAfterError = step.tool === 'browser_snapshot' && (stepCount - lastErrorStep) <= 1;
+        
+        if (repeatedCount >= maxRepeatedActions && step.tool === 'browser_snapshot' && !isSnapshotAfterError) {
+          executionLog.push(`Прекращаю выполнение: агент зациклился на ${step.tool} (${repeatedCount} раз подряд)`);
+          console.log(`  ✗ ОШИБКА: Агент зациклился на ${step.tool} (${repeatedCount} раз подряд)`);
+          hasError = true;
+          break;
+        }
+
         executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description}`);
 
         const tool = mcpToolMap[step.tool];
         if (!tool) {
           executionLog.push(`  ✗ Инструмент "${step.tool}" не найден`);
+          console.log(`  ✗ ОШИБКА: Инструмент "${step.tool}" не найден`);
           hasError = true;
           break;
         }
@@ -258,8 +366,8 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
           // Проверяем на ошибки
           const content = result.content || '';
           const contentLower = content.toLowerCase();
-          
-          const isError = 
+
+          const isError =
             content.includes('### Error') ||
             contentLower.includes('error:') ||
             contentLower.includes('exception') ||
@@ -273,29 +381,49 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
             contentLower.includes('cannot proceed');
 
           if (isError) {
+            consecutiveErrors++;
+            lastErrorStep = stepCount; // Запоминаем шаг с ошибкой
             executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description} - ✗ ОШИБКА`);
             console.log(`  ✗ ОШИБКА: ${step.tool} - ${step.description}`);
             console.log(`  Детали: ${content.substring(0, 300)}`);
-            hasError = true;
-            break;
+
+            // Если 3 ошибки подряд - останавливаемся
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+              executionLog.push(`Прекращаю выполнение после ${maxConsecutiveErrors} ошибок подряд`);
+              hasError = true;
+              break;
+            }
+
+            // Добавляем информацию об ошибке в промт для следующего шага
+            lastResult = `ОШИБКА: ${content.substring(0, 500)}`;
           } else {
+            consecutiveErrors = 0; // Сброс счётчика ошибок
             executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description} - ✓ OK`);
             console.log(`  ✓ OK: ${step.tool} - ${step.description}`);
             lastResult = content;
 
+            // Добавляем результат snapshot в контекст для следующего шага
             if (step.tool === 'browser_snapshot') {
-              currentMessages.push({
+              // Добавляем snapshot в messages чтобы агент видел результат
+              messages.push({
                 role: 'user',
-                content: `Результат snapshot: ${content.substring(0, 1000)}`,
+                content: `Результат browser_snapshot:\n${content.substring(0, 5000)}`,
               });
             }
           }
         } catch (error: any) {
+          consecutiveErrors++;
+          lastErrorStep = stepCount; // Запоминаем шаг с ошибкой
           executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description} - ✗ ОШИБКА`);
           console.log(`  ✗ ОШИБКА: ${step.tool} - ${step.description}`);
           console.log(`  Детали: ${error.message || String(error).substring(0, 200)}`);
-          hasError = true;
-          break;
+
+          // Если 3 ошибки подряд - останавливаемся
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            executionLog.push(`Прекращаю выполнение после ${maxConsecutiveErrors} ошибок подряд`);
+            hasError = true;
+            break;
+          }
         }
       }
 

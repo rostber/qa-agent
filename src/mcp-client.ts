@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ListToolsResult } from '@modelcontextprotocol/sdk/types.js';
 import { join } from 'path';
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -9,7 +10,7 @@ export async function createPlaywrightMcpClient(): Promise<Client> {
 
   const transport = new StdioClientTransport({
     command: 'node',
-    args: [mcpCliPath, '--caps', 'testing,devtools', '--isolated'],
+    args: [mcpCliPath, '--caps', 'testing,devtools'],
   });
 
   const client = new Client(
@@ -29,4 +30,9 @@ export async function createPlaywrightMcpClient(): Promise<Client> {
 
 export async function closeMcpClient(client: Client): Promise<void> {
   await client.close();
+}
+
+// Типизированный метод для получения списка инструментов
+export async function listTools(client: Client): Promise<ListToolsResult> {
+  return await client.listTools();
 }
