@@ -267,12 +267,65 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
       const maxRecentActions = 5; // Сколько последних действий хранить
       const maxRepeatedActions = 5; // Максимум повторений одного действия перед остановкой (увеличено с 3 до 5)
       let lastErrorStep = 0; // Номер шага когда была последняя ошибка
+      
+      // Для оптимизации запросов к LLM
+      let lastSnapshotHash: string | null = null;
+      let unchangedSnapshotCount = 0;
+      const maxUnchangedSnapshots = 5; // Максимум snapshot без изменений перед остановкой
+      let lastExecutedTool: string | null = null; // Запоминаем последний выполненный инструмент
+      let iterationCount = 0; // Счётчик итераций (для пропуска проверки на первом шаге)
 
       // Выполняем шаги циклически: планируем -> выполняем -> повторяем
       while (stepCount < maxSteps) {
         stepCount++;
+        iterationCount++;
 
-        // Создаём план для следующего шага
+        // 1. Делаем snapshot локально (без запроса к LLM) для проверки изменений
+        // На первом шаге всегда делаем snapshot чтобы агент увидел состояние страницы
+        // После действий меняющих страницу — делаем snapshot для проверки изменений
+        let currentSnapshot: any = null;
+        const toolsThatChangePage = ['browser_navigate', 'browser_click', 'browser_hover', 'browser_press_key', 'browser_type', 'browser_fill_form', 'browser_select_option', 'browser_drag'];
+        
+        const shouldTakeSnapshot = iterationCount === 1 || (lastExecutedTool && toolsThatChangePage.includes(lastExecutedTool));
+        
+        if (shouldTakeSnapshot) {
+          try {
+            const snapshotTool = mcpToolMap['browser_snapshot'];
+            if (snapshotTool) {
+              const snapshotResult = await snapshotTool.execute({});
+              currentSnapshot = { content: formatMcpResult(snapshotResult) };
+            }
+          } catch (error: any) {
+            currentSnapshot = null;
+          }
+        }
+
+        // 2. Проверяем изменился ли snapshot (пропускаем проверку на первом шаге)
+        const shouldPlanNextStep = iterationCount === 1 || !currentSnapshot || !lastSnapshotHash || currentSnapshot.content !== lastSnapshotHash;
+
+        if (!shouldPlanNextStep && currentSnapshot) {
+          // Snapshot не изменился — нет смысла делать запрос к LLM
+          unchangedSnapshotCount++;
+          
+          if (unchangedSnapshotCount >= maxUnchangedSnapshots) {
+            executionLog.push(`Прекращаю выполнение: страница не меняется (${maxUnchangedSnapshots} раз подряд)`);
+            console.log(`  ✗ ОШИБКА: Страница не меняется (${maxUnchangedSnapshots} раз подряд)`);
+            hasError = true;
+            break;
+          }
+          
+          // Короткая задержка перед повторной проверкой
+          await new Promise(resolve => setTimeout(resolve, 300));
+          continue;
+        }
+
+        // Сбрасываем счётчик неизменённых snapshot
+        if (currentSnapshot) {
+          lastSnapshotHash = currentSnapshot.content;
+          unchangedSnapshotCount = 0;
+        }
+
+        // 3. Snapshot изменился или это первый шаг — генерируем план (запрос к LLM)
         let planResult: any;
         let retries = 0;
         const maxRetries = 3;
@@ -280,7 +333,7 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
         while (retries < maxRetries) {
           try {
             requestCounter.count++;
-            
+
             // Формируем контекст последних snapshot для промта
             const recentSnapshots = messages
               .filter((m: any) => m.role === 'user' && m.content.includes('Результат browser_snapshot'))
@@ -288,6 +341,11 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
               .map((m: any) => m.content)
               .join('\n\n');
             
+            // На первом шаге добавляем текущий snapshot в промт
+            const currentSnapshotContext = (iterationCount === 1 && currentSnapshot) 
+              ? `Текущее состояние страницы:\n${currentSnapshot.content.substring(0, 3000)}`
+              : '';
+
             planResult = await generateObject({
               model: openai.chat(config.model),
               schema: z.object({
@@ -298,6 +356,7 @@ export async function createAgent(systemPrompt: string, requestCounter: { count:
               }),
               system: fullSystemPrompt,
               prompt: `Задача: ${userMessage.substring(0, 500)}
+${currentSnapshotContext}
 ${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSnapshots}` : ''}
 Результаты выполненных шагов: ${executionLog.slice(-5).join('; ')}
 Следующий шаг (tool, args, description, continue).
@@ -340,7 +399,7 @@ ${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSn
         // НО: пропускаем проверку если это snapshot сразу после ошибки (разумное поведение)
         const repeatedCount = recentActions.filter(a => a === actionKey).length;
         const isSnapshotAfterError = step.tool === 'browser_snapshot' && (stepCount - lastErrorStep) <= 1;
-        
+
         if (repeatedCount >= maxRepeatedActions && step.tool === 'browser_snapshot' && !isSnapshotAfterError) {
           executionLog.push(`Прекращаю выполнение: агент зациклился на ${step.tool} (${repeatedCount} раз подряд)`);
           console.log(`  ✗ ОШИБКА: Агент зациклился на ${step.tool} (${repeatedCount} раз подряд)`);
@@ -387,6 +446,9 @@ ${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSn
             console.log(`  ✗ ОШИБКА: ${step.tool} - ${step.description}`);
             console.log(`  Детали: ${content.substring(0, 300)}`);
 
+            // Запоминаем последний выполненный инструмент (даже при ошибке)
+            lastExecutedTool = step.tool;
+
             // Если 3 ошибки подряд - останавливаемся
             if (consecutiveErrors >= maxConsecutiveErrors) {
               executionLog.push(`Прекращаю выполнение после ${maxConsecutiveErrors} ошибок подряд`);
@@ -401,6 +463,9 @@ ${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSn
             executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description} - ✓ OK`);
             console.log(`  ✓ OK: ${step.tool} - ${step.description}`);
             lastResult = content;
+            
+            // Запоминаем последний выполненный инструмент для оптимизации snapshot
+            lastExecutedTool = step.tool;
 
             // Добавляем результат snapshot в контекст для следующего шага
             if (step.tool === 'browser_snapshot') {
@@ -417,6 +482,9 @@ ${recentSnapshots ? `\nПоследние snapshot страницы:\n${recentSn
           executionLog.push(`Шаг ${stepCount}: ${step.tool} - ${step.description} - ✗ ОШИБКА`);
           console.log(`  ✗ ОШИБКА: ${step.tool} - ${step.description}`);
           console.log(`  Детали: ${error.message || String(error).substring(0, 200)}`);
+          
+          // Запоминаем последний выполненный инструмент
+          lastExecutedTool = step.tool;
 
           // Если 3 ошибки подряд - останавливаемся
           if (consecutiveErrors >= maxConsecutiveErrors) {
