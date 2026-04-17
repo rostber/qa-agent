@@ -1,5 +1,5 @@
 {
-  "name": "qa-agent",
+  "name": "playwright-agent",
   "version": "1.0.0",
   "description": "CLI utility for AI agent with Playwright MCP support",
   "main": "dist/cli.js",

@@ -1,4 +1,4 @@
-# QA Agent CLI
+# Playwright CLI agent
 
 Интерактивная CLI-утилита для общения с AI-агентом с поддержкой MCP сервера Playwright.
 
